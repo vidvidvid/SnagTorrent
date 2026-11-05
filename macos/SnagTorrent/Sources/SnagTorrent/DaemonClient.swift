@@ -5,28 +5,36 @@ import Foundation
 enum DaemonRequest: Sendable {
     case ping
     case list
-    case add(source: String, paused: Bool)
+    case add(source: String, paused: Bool, onlyFiles: [Int]?)
+    case inspect(source: String)
     case pause(id: Int)
     case resume(id: Int)
     case remove(id: Int, deleteFiles: Bool)
+    case setFiles(id: Int, files: [Int])
     case shutdown
 
     var json: Any {
         switch self {
-        case .ping: "Ping"
-        case .list: "List"
-        case .shutdown: "Shutdown"
-        case let .add(source, paused):
-            ["Add": ["source": source, "paused": paused, "initial_peers": [String]()]]
-        case let .pause(id): ["Pause": ["id": id]]
-        case let .resume(id): ["Resume": ["id": id]]
-        case let .remove(id, deleteFiles): ["Remove": ["id": id, "delete_files": deleteFiles]]
+        case .ping: return "Ping"
+        case .list: return "List"
+        case .shutdown: return "Shutdown"
+        case let .add(source, paused, onlyFiles):
+            var add: [String: Any] = ["source": source, "paused": paused, "initial_peers": [String]()]
+            if let onlyFiles { add["only_files"] = onlyFiles }
+            return ["Add": add]
+        case let .inspect(source): return ["Inspect": ["source": source]]
+        case let .pause(id): return ["Pause": ["id": id]]
+        case let .resume(id): return ["Resume": ["id": id]]
+        case let .remove(id, deleteFiles): return ["Remove": ["id": id, "delete_files": deleteFiles]]
+        case let .setFiles(id, files): return ["SetFiles": ["id": id, "files": files]]
         }
     }
 
     var timeout: TimeInterval {
-        if case .add = self { return 130 }
-        return 15
+        switch self {
+        case .add, .inspect: 130
+        default: 15
+        }
     }
 }
 

@@ -24,6 +24,13 @@ struct ContentView: View {
         .sheet(isPresented: $showingAddSheet) {
             AddTorrentSheet { source, paused in store.add(source, paused: paused) }
         }
+        .sheet(isPresented: Binding(get: { store.addFlow != nil }, set: { if !$0 { store.cancelAdd() } })) {
+            if let flow = store.addFlow {
+                FilePickerSheet(flow: flow)
+                    .environment(store)
+                    .interactiveDismissDisabled()
+            }
+        }
         .alert(item: $store.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }

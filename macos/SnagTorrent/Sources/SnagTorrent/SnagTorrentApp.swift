@@ -31,6 +31,16 @@ struct SnagTorrentApp: App {
                     NotificationCenter.default.post(name: .snagOpenTorrentFile, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
+                Divider()
+                Button("Set as Default for Magnet Links and .torrent Files") {
+                    Task {
+                        do {
+                            try await DefaultHandler.makeDefault()
+                        } catch {
+                            store.alert = .init(title: "Could not set SnagTorrent as default", message: error.localizedDescription)
+                        }
+                    }
+                }
             }
             CommandGroup(after: .toolbar) {
                 Picker("Appearance", selection: $appearance) {

@@ -12,6 +12,14 @@ pub enum Request {
         source: String,
         paused: bool,
         initial_peers: Vec<SocketAddr>,
+        /// Download only these file indices (see `Inspect`); `None` means every file.
+        #[serde(default)]
+        only_files: Option<Vec<usize>>,
+    },
+    /// Resolve a source's metadata without adding it, so a client can show the
+    /// file list first. A following `Add` of the same source reuses the metadata.
+    Inspect {
+        source: String,
     },
     List,
     Pause {
@@ -24,6 +32,11 @@ pub enum Request {
         id: usize,
         delete_files: bool,
     },
+    /// Download only these files (indices into `TorrentSummary::files`).
+    SetFiles {
+        id: usize,
+        files: Vec<usize>,
+    },
     Shutdown,
 }
 
@@ -32,6 +45,18 @@ pub struct Response {
     pub error: Option<String>,
     pub message: Option<String>,
     pub torrents: Vec<TorrentSummary>,
+    /// Set only for `Inspect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<TorrentPreview>,
+}
+
+/// Metadata of a torrent that has not been added yet.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TorrentPreview {
+    pub name: String,
+    pub info_hash: String,
+    pub total_bytes: u64,
+    pub files: Vec<FileSummary>,
 }
 
 impl Response {
@@ -40,6 +65,7 @@ impl Response {
             error: None,
             message: Some(message.into()),
             torrents: Vec::new(),
+            preview: None,
         }
     }
 
@@ -48,6 +74,7 @@ impl Response {
             error: None,
             message: Some(message.into()),
             torrents: vec![torrent],
+            preview: None,
         }
     }
 
@@ -56,6 +83,16 @@ impl Response {
             error: None,
             message: None,
             torrents,
+            preview: None,
+        }
+    }
+
+    pub fn preview(preview: TorrentPreview) -> Self {
+        Self {
+            error: None,
+            message: None,
+            torrents: Vec::new(),
+            preview: Some(preview),
         }
     }
 
@@ -64,6 +101,7 @@ impl Response {
             error: Some(error.into()),
             message: None,
             torrents: Vec::new(),
+            preview: None,
         }
     }
 }
@@ -102,4 +140,11 @@ pub struct FileSummary {
     pub path: String,
     pub length: u64,
     pub progress_bytes: u64,
+    /// Whether this file is wanted; unselected files are skipped.
+    #[serde(default = "default_true")]
+    pub selected: bool,
+}
+
+fn default_true() -> bool {
+    true
 }

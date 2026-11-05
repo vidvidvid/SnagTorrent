@@ -35,6 +35,12 @@ enum Command {
         paused: bool,
         #[arg(long = "peer", help = "Connect to an initial peer (IP:PORT)")]
         initial_peers: Vec<SocketAddr>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Download only these file indices (comma-separated; see `snag files`)"
+        )]
+        only: Option<Vec<usize>>,
     },
     #[command(about = "List torrents, progress, and current speeds")]
     List,
@@ -48,6 +54,14 @@ enum Command {
         #[arg(long, help = "Also delete this torrent's files from disk")]
         delete_files: bool,
     },
+    #[command(about = "Choose which files of a torrent to download (indices from `snag files`)")]
+    Select {
+        id: usize,
+        #[arg(required = true, help = "File indices to download; all other files are skipped")]
+        files: Vec<usize>,
+    },
+    #[command(about = "List a torrent's files with their indices")]
+    Files { id: usize },
     #[command(about = "Stop the background daemon")]
     Stop,
     #[command(hide = true)]
@@ -100,6 +114,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             source,
             paused,
             initial_peers,
+            only,
         } => {
             let source = client::normalize_source(&source)?;
             let response = client::call(
@@ -108,6 +123,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     source,
                     paused,
                     initial_peers,
+                    only_files: only,
                 },
             )
             .await?;
@@ -135,6 +151,34 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Command::Remove { id, delete_files } => {
             let response = client::call(&paths, Request::Remove { id, delete_files }).await?;
             print_message(&response.message);
+            Ok(())
+        }
+        Command::Select { id, files } => {
+            let response = client::call(&paths, Request::SetFiles { id, files }).await?;
+            print_message(&response.message);
+            Ok(())
+        }
+        Command::Files { id } => {
+            let response = client::call(&paths, Request::List).await?;
+            let torrent = response
+                .torrents
+                .iter()
+                .find(|torrent| torrent.id == id)
+                .ok_or_else(|| anyhow::anyhow!("no torrent with ID {id}"))?;
+            if torrent.files.is_empty() {
+                println!("No file list yet; metadata is still being fetched");
+                return Ok(());
+            }
+            println!("{:<5} {:<4} {:>10}  PATH", "INDEX", "GET", "SIZE");
+            for (index, file) in torrent.files.iter().enumerate() {
+                println!(
+                    "{:<5} {:<4} {:>10}  {}",
+                    index,
+                    if file.selected { "yes" } else { "no" },
+                    human_bytes(file.length),
+                    display_name(&file.path)
+                );
+            }
             Ok(())
         }
         Command::Stop => {

@@ -14,6 +14,17 @@ final class TorrentStore {
     private(set) var startingDaemon = false
     var alert: AlertMessage?
 
+    /// The add in progress: metadata being fetched, or a resolved torrent waiting for
+    /// the user to pick files. Drives the file-picker sheet.
+    enum AddFlow {
+        case fetching(source: String)
+        case ready(TorrentPreview, source: String, startPaused: Bool)
+    }
+
+    private(set) var addFlow: AddFlow?
+    private var addQueue: [(source: String, startPaused: Bool)] = []
+    private var fetchGeneration = 0
+
     // View state shared by the table, the toolbar, and the menu commands.
     var filter: StatusFilter = .all
     var searchText = ""
@@ -92,20 +103,72 @@ final class TorrentStore {
 
     // MARK: - Torrent actions
 
+    /// Queues a source; each one is resolved (added paused) and then shown in the
+    /// file picker before anything downloads.
     func add(_ source: String, paused: Bool = false) {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        addQueue.append((trimmed, paused))
+        processAddQueue()
+    }
+
+    private func processAddQueue() {
+        guard addFlow == nil, !addQueue.isEmpty else { return }
+        let next = addQueue.removeFirst()
+        addFlow = .fetching(source: next.source)
+        fetchGeneration += 1
+        let generation = fetchGeneration
         pendingAdds += 1
         Task {
             defer { pendingAdds -= 1 }
             do {
                 try await client.ensureRunning()
-                _ = try await client.send(.add(source: trimmed, paused: paused))
-                await refresh()
+                let response = try await client.send(.inspect(source: next.source))
+                guard generation == fetchGeneration, case .fetching = addFlow else { return }
+                guard let preview = response.preview else {
+                    let name = response.torrents.first?.name ?? next.source
+                    report("Already in the list", DaemonError("“\(name)” was added before."))
+                    finishAdd()
+                    return
+                }
+                addFlow = .ready(preview, source: next.source, startPaused: next.startPaused)
             } catch {
-                report("Could not add torrent", error)
+                guard generation == fetchGeneration else { return }
+                report("Could not read torrent", error)
+                finishAdd()
             }
         }
+    }
+
+    /// Confirms the picker: adds the torrent with only `files` (indices) selected.
+    func confirmAdd(files: Set<Int>) {
+        guard case let .ready(preview, source, startPaused) = addFlow else { return }
+        let all = Set(preview.files.indices)
+        let onlyFiles: [Int]? = files.isEmpty || files == all ? nil : files.sorted()
+        addFlow = nil
+        pendingAdds += 1
+        Task {
+            defer { pendingAdds -= 1 }
+            do {
+                _ = try await client.send(.add(source: source, paused: startPaused, onlyFiles: onlyFiles))
+                await refresh()
+            } catch {
+                report("Could not add “\(preview.name)”", error)
+            }
+            processAddQueue()
+        }
+    }
+
+    /// Cancels the picker; nothing was added, so there is nothing to undo.
+    func cancelAdd() {
+        guard addFlow != nil else { return }
+        fetchGeneration += 1
+        finishAdd()
+    }
+
+    private func finishAdd() {
+        addFlow = nil
+        processAddQueue()
     }
 
     func add(fileURL: URL) {

@@ -52,6 +52,10 @@ enum DebugDriver {
             default: store.sortOrder = [KeyPathComparator(\.id, order: order)]
             }
         case "add": store.add(argument)
+        case "pick":
+            let indices = Set(argument.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+            store.confirmAdd(files: indices)
+        case "pickcancel": store.cancelAdd()
         case "addsheet": NotificationCenter.default.post(name: .snagShowAddSheet, object: nil)
         case "toggle": if let torrent { store.togglePause(torrent) }
         case "remove": if let torrent { store.remove(torrent, deleteFiles: false) }
@@ -128,15 +132,24 @@ enum DebugDriver {
         }
     }
 
+    private static func flowDescription(_ flow: TorrentStore.AddFlow?) -> String {
+        switch flow {
+        case nil: "none"
+        case let .fetching(source): "fetching:\(source)"
+        case let .ready(preview, _, paused): "ready:\(preview.name):paused=\(paused):files=\(preview.files.map(\.path).joined(separator: ";"))"
+        }
+    }
+
     private static func writeState(to url: URL, store: TorrentStore) {
         var lines = [
             "daemon=\(store.daemonRunning ? "running" : "stopped") pending=\(store.pendingAdds)",
             "filter=\(store.filter.rawValue) search=\(store.searchText)",
             "windows=\(NSApp.windows.filter(\.isVisible).map { "\($0.className):\($0.title)" }.joined(separator: ","))",
+            "flow=\(flowDescription(store.addFlow))",
         ]
         for torrent in store.visibleTorrents {
             let video = store.playableVideo(torrent)?.path ?? "-"
-            lines.append("\(torrent.id)|\(torrent.name)|\(torrent.state)|\(Format.percent(torrent.fraction))|\(Format.size(torrent.totalBytes))|\(Format.rate(torrent.downloadSpeed))|\(Format.rate(torrent.uploadSpeed))|seeds=\(torrent.seeders)|leech=\(torrent.leechers)|\(Format.eta(torrent.etaSeconds))|files=\(torrent.files.count)|video=\(video)")
+            lines.append("\(torrent.id)|\(torrent.name)|\(torrent.state)|\(Format.percent(torrent.fraction))|\(Format.size(torrent.totalBytes))|\(Format.rate(torrent.downloadSpeed))|\(Format.rate(torrent.uploadSpeed))|seeds=\(torrent.seeders)|leech=\(torrent.leechers)|\(Format.eta(torrent.etaSeconds))|files=\(torrent.files.count)|selected=\(torrent.files.indices.filter { torrent.files[$0].selected }.map(String.init).joined(separator: ","))|video=\(video)")
         }
         try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }

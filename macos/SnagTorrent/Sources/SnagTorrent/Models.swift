@@ -67,9 +67,13 @@ struct TorrentSummary: Decodable, Identifiable, Hashable, Sendable {
         folderURL.appendingPathComponent(file.path)
     }
 
-    /// The largest file with a video extension, if any.
+    /// The largest selected file with a video extension, if any.
     var mainVideo: FileSummary? {
-        files.filter(\.isVideo).max { $0.length < $1.length }
+        files.filter { $0.isVideo && $0.selected }.max { $0.length < $1.length }
+    }
+
+    var selectedBytes: UInt64 {
+        files.filter(\.selected).reduce(0) { $0 + $1.length }
     }
 }
 
@@ -77,11 +81,22 @@ struct FileSummary: Decodable, Hashable, Sendable {
     let path: String
     let length: UInt64
     let progressBytes: UInt64
+    let selected: Bool
 
     enum CodingKeys: String, CodingKey {
-        case path, length
+        case path, length, selected
         case progressBytes = "progress_bytes"
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        length = try c.decode(UInt64.self, forKey: .length)
+        progressBytes = try c.decodeIfPresent(UInt64.self, forKey: .progressBytes) ?? 0
+        selected = try c.decodeIfPresent(Bool.self, forKey: .selected) ?? true
+    }
+
+    var name: String { (path as NSString).lastPathComponent }
 
     static let videoExtensions: Set<String> = [
         "mp4", "mkv", "mov", "m4v", "avi", "webm", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts", "ogv", "3gp",
@@ -142,4 +157,19 @@ struct DaemonResponse: Decodable, Sendable {
     let error: String?
     let message: String?
     let torrents: [TorrentSummary]
+    let preview: TorrentPreview?
+}
+
+/// Metadata of a torrent that has not been added yet (the daemon's `Inspect` reply).
+struct TorrentPreview: Decodable, Hashable, Sendable {
+    let name: String
+    let infoHash: String
+    let totalBytes: UInt64
+    let files: [FileSummary]
+
+    enum CodingKeys: String, CodingKey {
+        case name, files
+        case infoHash = "info_hash"
+        case totalBytes = "total_bytes"
+    }
 }
