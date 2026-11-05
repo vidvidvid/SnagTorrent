@@ -12,15 +12,14 @@ struct SnagTorrentApp: App {
             ContentView()
                 .environment(store)
                 .frame(minWidth: 1160, minHeight: 360)
-                .onAppear {
-                    store.start()
-                    #if DEBUG
-                    DebugDriver.startIfRequested(store: store)
-                    #endif
-                }
+                .onAppear { store.start() }
         }
         .defaultSize(width: 1240, height: 560)
         .windowToolbarStyle(.unified(showsTitle: false))
+        Settings {
+            SettingsView()
+                .environment(store)
+        }
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Add Torrent…") {
@@ -71,6 +70,12 @@ extension Notification.Name {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         AppAppearance.applyStored()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        DebugDriver.startIfRequested(store: TorrentStore.shared)
+        #endif
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

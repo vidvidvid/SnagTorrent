@@ -12,6 +12,8 @@ final class TorrentStore {
     private(set) var daemonRunning = false
     private(set) var pendingAdds = 0
     private(set) var startingDaemon = false
+    private(set) var downloadDirectory: URL
+    private(set) var changingDownloadDirectory = false
     var alert: AlertMessage?
 
     /// The add in progress: metadata being fetched, or a resolved torrent waiting for
@@ -41,6 +43,10 @@ final class TorrentStore {
 
     let client = DaemonClient()
     private var pollTask: Task<Void, Never>?
+
+    init() {
+        downloadDirectory = client.downloadDirectory
+    }
 
     struct AlertMessage: Identifiable {
         let id = UUID()
@@ -87,6 +93,25 @@ final class TorrentStore {
             daemonRunning = false
             if !quietly { report("Could not start the daemon", error) }
         }
+    }
+
+    /// Switches the download folder for new torrents; restarts the daemon to apply it.
+    func changeDownloadDirectory(_ url: URL) async {
+        changingDownloadDirectory = true
+        defer { changingDownloadDirectory = false }
+        do {
+            try await client.restart(downloadDirectory: url)
+            downloadDirectory = client.downloadDirectory
+            await refresh()
+        } catch {
+            downloadDirectory = client.downloadDirectory
+            report("Could not change the download folder", error)
+            await refresh()
+        }
+    }
+
+    func revealDownloadDirectory() {
+        NSWorkspace.shared.activateFileViewerSelecting([downloadDirectory])
     }
 
     func stopDaemon() async {

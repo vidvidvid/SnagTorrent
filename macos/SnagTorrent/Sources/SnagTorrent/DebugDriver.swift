@@ -63,6 +63,7 @@ enum DebugDriver {
         case "confirmdelete": if let torrent { NotificationCenter.default.post(name: .snagRequestDelete, object: torrent.id) }
         case "play": if let torrent { store.play(torrent) }
         case "reveal": if let torrent { store.revealInFinder(torrent) }
+        case "setdir": Task { await store.changeDownloadDirectory(URL(fileURLWithPath: argument, isDirectory: true)) }
         case "stop": Task { await store.stopDaemon() }
         case "start": Task { await store.startDaemon() }
         case "key": sendKey(argument)
@@ -146,6 +147,7 @@ enum DebugDriver {
             "filter=\(store.filter.rawValue) search=\(store.searchText)",
             "windows=\(NSApp.windows.filter(\.isVisible).map { "\($0.className):\($0.title)" }.joined(separator: ","))",
             "flow=\(flowDescription(store.addFlow))",
+            "downloads=\(store.downloadDirectory.path)",
         ]
         for torrent in store.visibleTorrents {
             let video = store.playableVideo(torrent)?.path ?? "-"

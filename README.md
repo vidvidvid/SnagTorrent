@@ -74,7 +74,7 @@ Run `snag --help` or `snag <command> --help` for all options.
 
 ## GUI
 
-A native SwiftUI app lives in `macos/SnagTorrent`. It shows every torrent the daemon knows in a sortable, filterable table (status, progress, speeds, seeds, leechers, ETA) with per-row actions: play the largest video file, pause/resume, reveal in Finder, remove, and delete with files. Magnet links, info hashes, torrent URLs, and dropped or opened `.torrent` files all go through a file picker first, so you choose which files to download before anything starts. The app can start or stop the daemon, follows the system appearance or forces light/dark (View > Appearance), and File > Set as Default makes it the handler for magnet links and `.torrent` files.
+A native SwiftUI app lives in `macos/SnagTorrent`. It shows every torrent the daemon knows in a sortable, filterable table (status, progress, speeds, seeds, leechers, ETA) with per-row actions: play the largest video file, pause/resume, reveal in Finder, remove, and delete with files. Magnet links, info hashes, torrent URLs, and dropped or opened `.torrent` files all go through a file picker first, so you choose which files to download before anything starts. The app can start or stop the daemon, follows the system appearance or forces light/dark (View > Appearance), and File > Set as Default makes it the handler for magnet links and `.torrent` files. The download folder is in Settings (⌘,); changing it restarts the daemon.
 
 Build and install it (needs Xcode and a Rust toolchain; the app bundles the `snag` binary so the daemon starts on demand):
 

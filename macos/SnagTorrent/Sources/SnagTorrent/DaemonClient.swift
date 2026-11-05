@@ -101,12 +101,46 @@ final class DaemonClient: Sendable {
     /// and waits until it answers pings.
     func ensureRunning() async throws {
         if await isRunning() { return }
+        try runSnag(["start"])
+        try await waitUntilRunning()
+    }
+
+    /// The configured download folder (`config.json`), or the daemon's default.
+    var downloadDirectory: URL {
+        let config = stateDirectory.appendingPathComponent("config.json")
+        if let data = try? Data(contentsOf: config),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let path = object["download_dir"] as? String, !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Downloads/SnagTorrent", isDirectory: true)
+    }
+
+    /// Stops the daemon, records the new folder, and starts it again. The folder
+    /// can only change at startup, so this is the one way to switch it.
+    func restart(downloadDirectory: URL) async throws {
+        if await isRunning() {
+            _ = try await send(.shutdown)
+            for _ in 0..<100 {
+                if !(await isRunning()) { break }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            if await isRunning() {
+                throw DaemonError("The daemon did not stop; try again.")
+            }
+        }
+        try runSnag(["start", "--download-dir", downloadDirectory.path])
+        try await waitUntilRunning()
+    }
+
+    private func runSnag(_ arguments: [String]) throws {
         guard let executable = Self.snagExecutable else {
             throw DaemonError("Could not find the snag executable. Install it with `cargo install --path .`.")
         }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["start"]
+        process.arguments = arguments
         let errorPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
@@ -115,8 +149,11 @@ final class DaemonClient: Sendable {
         process.waitUntilExit()
         if process.terminationStatus != 0 {
             let text = String(decoding: stderrData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw DaemonError(text.isEmpty ? "The daemon failed to start." : text)
+            throw DaemonError(text.isEmpty ? "The daemon failed to start." : text.replacingOccurrences(of: "snag: ", with: ""))
         }
+    }
+
+    private func waitUntilRunning() async throws {
         for _ in 0..<50 {
             if await isRunning() { return }
             try await Task.sleep(for: .milliseconds(100))

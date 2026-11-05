@@ -222,7 +222,8 @@ struct ContentView: View {
                     Button("Start Daemon") { Task { await store.startDaemon() } }
                         .disabled(store.startingDaemon)
                 }
-                Button("Reveal Downloads Folder") { revealDownloads() }
+                Button("Reveal Downloads Folder") { store.revealDownloadDirectory() }
+                SettingsLink { Text("Change Download Folder…") }
                 Button("Show Daemon Log") {
                     NSWorkspace.shared.activateFileViewerSelecting([store.client.logURL])
                 }
@@ -266,12 +267,6 @@ struct ContentView: View {
         case .error: .red
         case .unknown: .secondary
         }
-    }
-
-    private func revealDownloads() {
-        let folder = store.torrents.first?.folderURL.deletingLastPathComponent()
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/SnagTorrent")
-        NSWorkspace.shared.activateFileViewerSelecting([folder])
     }
 
     private func openTorrentFiles() {
@@ -338,35 +333,72 @@ struct RowActions: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            action("Play", "play.rectangle", help: playHelp) { store.play(torrent) }
-            action(torrent.isPaused ? "Resume" : "Pause",
-                   torrent.isPaused ? "play.circle" : "pause.circle",
-                   help: torrent.isPaused ? "Resume" : "Pause") { store.togglePause(torrent) }
-            action("Reveal in Finder", "folder", help: "Reveal in Finder") { store.revealInFinder(torrent) }
-            action("Remove", "xmark.circle", help: "Remove torrent, keep files") {
+            RowActionButton("Play", symbol: "play.rectangle", help: playHelp) { store.play(torrent) }
+            RowActionButton(torrent.isPaused ? "Resume" : "Pause",
+                            symbol: torrent.isPaused ? "play.circle" : "pause.circle",
+                            help: torrent.isPaused ? "Resume" : "Pause") { store.togglePause(torrent) }
+            RowActionButton("Reveal in Finder", symbol: "folder", help: "Reveal in Finder") { store.revealInFinder(torrent) }
+            RowActionButton("Remove", symbol: "xmark.circle", help: "Remove torrent, keep files") {
                 store.remove(torrent, deleteFiles: false)
             }
-            action("Delete", "trash", help: "Delete torrent and its files…") { requestDelete(torrent) }
+            RowActionButton("Delete", symbol: "trash", help: "Delete torrent and its files…", destructive: true) {
+                requestDelete(torrent)
+            }
         }
-        .buttonStyle(.borderless)
-        .labelStyle(.iconOnly)
-        .foregroundStyle(.secondary)
-        .imageScale(.medium)
     }
 
     private var playHelp: String {
         if let video = torrent.mainVideo {
-            return "Play \((video.path as NSString).lastPathComponent)"
+            return "Play \(video.name)"
         }
         return "No video file; reveals the folder"
     }
+}
 
-    private func action(_ title: String, _ symbol: String, help: String, _ perform: @escaping () -> Void) -> some View {
-        Button(action: perform) {
+/// A borderless icon button that lights up under the cursor and dips when pressed.
+struct RowActionButton: View {
+    let title: String
+    let symbol: String
+    let help: String
+    var destructive = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    init(_ title: String, symbol: String, help: String, destructive: Bool = false, action: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.help = help
+        self.destructive = destructive
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
             Label(title, systemImage: symbol)
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
+                .labelStyle(.iconOnly)
+                .imageScale(.medium)
+                .foregroundStyle(hovering ? (destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary)) : AnyShapeStyle(.secondary))
+                .frame(width: 24, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(RowActionPressStyle())
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
         }
         .help(help)
+        .accessibilityLabel(title)
+    }
+}
+
+struct RowActionPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
