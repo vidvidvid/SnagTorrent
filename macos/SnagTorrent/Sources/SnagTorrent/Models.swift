@@ -75,6 +75,10 @@ struct TorrentSummary: Decodable, Identifiable, Hashable, Sendable {
     var selectedBytes: UInt64 {
         files.filter(\.selected).reduce(0) { $0 + $1.length }
     }
+
+    var ratio: Double? {
+        progressBytes == 0 ? nil : Double(uploadedBytes) / Double(progressBytes)
+    }
 }
 
 struct FileSummary: Decodable, Hashable, Sendable {
@@ -107,6 +111,7 @@ struct FileSummary: Decodable, Hashable, Sendable {
     }
 
     var isComplete: Bool { progressBytes >= length }
+    var fraction: Double { length == 0 ? 1 : Double(progressBytes) / Double(length) }
 }
 
 enum TorrentStatus: String, Sendable {
@@ -158,6 +163,27 @@ struct DaemonResponse: Decodable, Sendable {
     let message: String?
     let torrents: [TorrentSummary]
     let preview: TorrentPreview?
+    let status: DaemonStatus?
+    let streamUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case error, message, torrents, preview, status
+        case streamUrl = "stream_url"
+    }
+}
+
+struct DaemonStatus: Decodable, Hashable, Sendable {
+    let version: String
+    let downloadDir: String
+    let pauseWhenDone: Bool
+    let streamPort: UInt16
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case downloadDir = "download_dir"
+        case pauseWhenDone = "pause_when_done"
+        case streamPort = "stream_port"
+    }
 }
 
 /// Metadata of a torrent that has not been added yet (the daemon's `Inspect` reply).

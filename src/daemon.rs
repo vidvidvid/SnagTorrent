@@ -19,8 +19,12 @@ use tokio::{
 };
 
 use crate::{
-    paths::{AppPaths, create_private_dir},
-    protocol::{FileSummary, MAX_REQUEST_BYTES, Request, Response, TorrentPreview, TorrentSummary},
+    paths::{AppPaths, Config, create_private_dir},
+    protocol::{
+        DaemonStatus, FileSummary, MAX_REQUEST_BYTES, Request, Response, TorrentPreview,
+        TorrentSummary,
+    },
+    stream::StreamServer,
 };
 
 /// Metadata kept from an `Inspect` so the following `Add` does not fetch it again.
@@ -34,6 +38,21 @@ const MAX_INSPECTED: usize = 32;
 struct Daemon {
     session: Arc<Session>,
     inspected: Mutex<HashMap<String, Inspected>>,
+    paths: AppPaths,
+    config: Mutex<Config>,
+    streams: StreamServer,
+}
+
+impl Daemon {
+    fn status(&self) -> DaemonStatus {
+        let config = self.config.lock().unwrap();
+        DaemonStatus {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            download_dir: config.download_dir.to_string_lossy().into_owned(),
+            pause_when_done: config.pause_when_done,
+            stream_port: self.streams.port,
+        }
+    }
 }
 
 pub async fn run(paths: AppPaths) -> Result<()> {
@@ -44,7 +63,7 @@ pub async fn run(paths: AppPaths) -> Result<()> {
     let (listener, _guard) = bind_control_socket(&paths)?;
 
     let session = Session::new_with_opts(
-        download_dir,
+        download_dir.clone(),
         SessionOptions {
             dht: Some(DhtSessionConfig {
                 persistence: None,
@@ -63,10 +82,18 @@ pub async fn run(paths: AppPaths) -> Result<()> {
     .await
     .context("could not start the BitTorrent session")?;
 
+    let streams = StreamServer::start(session.clone()).await?;
     let daemon = Arc::new(Daemon {
         session: session.clone(),
         inspected: Mutex::new(HashMap::new()),
+        paths: paths.clone(),
+        config: Mutex::new(Config {
+            download_dir,
+            ..config
+        }),
+        streams,
     });
+    tokio::spawn(pause_finished_torrents(daemon.clone()));
     tracing::info!("SnagTorrent daemon started");
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
@@ -165,7 +192,9 @@ async fn handle_request(request: Request, daemon: &Daemon) -> Response {
                 }
                 None => match AddTorrent::from_cli_argument(&source) {
                     Ok(add) => (add, None),
-                    Err(error) => return Response::error(format!("could not read torrent: {error:#}")),
+                    Err(error) => {
+                        return Response::error(format!("could not read torrent: {error:#}"));
+                    }
                 },
             };
             initial_peers.sort_unstable();
@@ -306,7 +335,9 @@ async fn handle_request(request: Request, daemon: &Daemon) -> Response {
                     return Response::error("select at least one file");
                 }
                 if files.iter().any(|&index| index >= count) {
-                    return Response::error(format!("file index out of range; {id} has {count} files"));
+                    return Response::error(format!(
+                        "file index out of range; {id} has {count} files"
+                    ));
                 }
                 let selected = files.iter().copied().collect::<HashSet<usize>>();
                 match session.update_only_files(&handle, &selected).await {
@@ -314,12 +345,85 @@ async fn handle_request(request: Request, daemon: &Daemon) -> Response {
                         format!("Selected {} of {count} files for {id}", selected.len()),
                         summarize(&handle),
                     ),
-                    Err(error) => Response::error(format!("could not select files for {id}: {error:#}")),
+                    Err(error) => {
+                        Response::error(format!("could not select files for {id}: {error:#}"))
+                    }
+                }
+            }
+            None => Response::error(format!("no torrent with ID {id}")),
+        },
+        Request::Status => Response::status(daemon.status()),
+        Request::Configure { pause_when_done } => {
+            let config = {
+                let mut config = daemon.config.lock().unwrap();
+                if let Some(pause_when_done) = pause_when_done {
+                    config.pause_when_done = pause_when_done;
+                }
+                config.clone()
+            };
+            if let Err(error) = daemon.paths.save_config(&config) {
+                return Response::error(format!("could not save settings: {error:#}"));
+            }
+            Response::status(daemon.status())
+        }
+        Request::StreamUrl { id, file } => match session.get(TorrentIdOrHash::Id(id)) {
+            Some(handle) => {
+                let name = handle.with_metadata(|metadata| {
+                    metadata
+                        .file_infos
+                        .get(file)
+                        .map(|info| info.relative_filename.to_string_lossy().into_owned())
+                });
+                match name {
+                    Ok(Some(path)) => {
+                        let name = path.rsplit('/').next().unwrap_or(&path);
+                        Response::stream_url(daemon.streams.url(id, file, name))
+                    }
+                    Ok(None) => Response::error(format!("{id} has no file {file}")),
+                    Err(_) => Response::error(format!("{id} is still fetching metadata")),
                 }
             }
             None => Response::error(format!("no torrent with ID {id}")),
         },
         Request::Shutdown => Response::message("SnagTorrent stopped"),
+    }
+}
+
+/// With `pause_when_done` on, pauses each torrent once when it finishes, so it
+/// stops seeding. A torrent the user resumes afterwards is left alone; one that
+/// becomes incomplete again (re-added under the same id, more files selected)
+/// is paused again when it next finishes.
+async fn pause_finished_torrents(daemon: Arc<Daemon>) {
+    let mut handled = HashSet::new();
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if !daemon.config.lock().unwrap().pause_when_done {
+            continue;
+        }
+        let (finished, unfinished) = daemon.session.with_torrents(|torrents| {
+            let mut finished = Vec::new();
+            let mut unfinished = HashSet::new();
+            for (_, handle) in torrents {
+                let stats = handle.stats();
+                if !stats.finished {
+                    unfinished.insert(handle.id());
+                } else if matches!(stats.state, TorrentStatsState::Live) {
+                    finished.push(handle.clone());
+                }
+            }
+            (finished, unfinished)
+        });
+        handled.retain(|id| !unfinished.contains(id));
+        for handle in finished {
+            if handled.insert(handle.id())
+                && let Err(error) = daemon.session.pause(&handle).await
+            {
+                tracing::warn!(
+                    "could not pause finished torrent {}: {error:#}",
+                    handle.id()
+                );
+            }
+        }
     }
 }
 
@@ -394,9 +498,7 @@ fn summarize(handle: &Arc<ManagedTorrent>) -> TorrentSummary {
                     path: file.relative_filename.to_string_lossy().into_owned(),
                     length: file.len,
                     progress_bytes: stats.file_progress.get(index).copied().unwrap_or(0),
-                    selected: only_files
-                        .as_ref()
-                        .is_none_or(|only| only.contains(&index)),
+                    selected: only_files.as_ref().is_none_or(|only| only.contains(&index)),
                 })
                 .collect::<Vec<_>>()
         })

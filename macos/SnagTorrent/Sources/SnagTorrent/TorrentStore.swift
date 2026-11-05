@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 import Observation
+import UniformTypeIdentifiers
+import UserNotifications
 
 /// Live view of the daemon's torrents plus every action the UI can take.
 @MainActor
@@ -14,7 +16,43 @@ final class TorrentStore {
     private(set) var startingDaemon = false
     private(set) var downloadDirectory: URL
     private(set) var changingDownloadDirectory = false
+    private(set) var pauseWhenDone = true
+    private(set) var streamPort: UInt16 = 0
+    private(set) var lastStreamURL: URL?
     var alert: AlertMessage?
+
+    /// Selected rows (torrent ids) and whether the details inspector is open.
+    var selection: Set<Int> = []
+    var showInspector = false
+
+    var selectedTorrent: TorrentSummary? {
+        torrents.first { selection.contains($0.id) }
+    }
+
+    var selectedTorrents: [TorrentSummary] {
+        torrents.filter { selection.contains($0.id) }
+    }
+
+    var activeDownloads: Int {
+        torrents.filter { $0.status == .downloading }.count
+    }
+
+    // App-side preferences.
+    static let notifyWhenDoneKey = "notifyWhenDone"
+    static let stopDaemonOnQuitKey = "stopDaemonOnQuit"
+
+    var notifyWhenDone: Bool {
+        get { UserDefaults.standard.object(forKey: Self.notifyWhenDoneKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.notifyWhenDoneKey) }
+    }
+
+    var stopDaemonOnQuit: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.stopDaemonOnQuitKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.stopDaemonOnQuitKey) }
+    }
+
+    /// Ids seen while still downloading, so a later complete state means "just finished".
+    private var incompleteIDs: Set<Int> = []
 
     /// The add in progress: metadata being fetched, or a resolved torrent waiting for
     /// the user to pick files. Drives the file-picker sheet.
@@ -73,13 +111,60 @@ final class TorrentStore {
     func refresh() async {
         do {
             let response = try await client.send(.list)
+            let wasRunning = daemonRunning
             torrents = response.torrents
             daemonRunning = true
+            trackCompletions(response.torrents)
+            if !wasRunning { await refreshStatus() }
         } catch let error as DaemonError where error.notRunning {
             torrents = []
             daemonRunning = false
         } catch {
             // Transient failure (for example a timeout); keep the last snapshot.
+        }
+        NSApp.dockTile.badgeLabel = activeDownloads > 0 ? "\(activeDownloads)" : nil
+    }
+
+    func refreshStatus() async {
+        guard let status = try? await client.send(.status).status else { return }
+        pauseWhenDone = status.pauseWhenDone
+        streamPort = status.streamPort
+        downloadDirectory = URL(fileURLWithPath: status.downloadDir, isDirectory: true)
+    }
+
+    func setPauseWhenDone(_ on: Bool) async {
+        do {
+            if let status = try await client.send(.configure(pauseWhenDone: on)).status {
+                pauseWhenDone = status.pauseWhenDone
+            }
+        } catch {
+            report("Could not change the setting", error)
+        }
+    }
+
+    private func trackCompletions(_ torrents: [TorrentSummary]) {
+        for torrent in torrents {
+            if torrent.isComplete {
+                if incompleteIDs.remove(torrent.id) != nil, notifyWhenDone {
+                    notifyCompleted(torrent)
+                }
+            } else {
+                incompleteIDs.insert(torrent.id)
+            }
+        }
+        incompleteIDs = incompleteIDs.intersection(torrents.map(\.id))
+    }
+
+    private func notifyCompleted(_ torrent: TorrentSummary) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Download complete"
+            content.body = torrent.name
+            content.sound = .default
+            let request = UNNotificationRequest(identifier: "done-\(torrent.infoHash)", content: content, trigger: nil)
+            try? await center.add(request)
         }
     }
 
@@ -124,6 +209,7 @@ final class TorrentStore {
         }
         torrents = []
         daemonRunning = false
+        NSApp.dockTile.badgeLabel = nil
     }
 
     // MARK: - Torrent actions
@@ -206,9 +292,39 @@ final class TorrentStore {
         }
     }
 
+    /// Pauses every selected torrent if any is running, otherwise resumes them all.
+    func togglePause(ids: Set<Int>) {
+        let targets = torrents.filter { ids.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        let pause = targets.contains { !$0.isPaused }
+        for torrent in targets where torrent.isPaused != pause {
+            perform("Could not \(pause ? "pause" : "resume") “\(torrent.name)”") {
+                pause ? .pause(id: torrent.id) : .resume(id: torrent.id)
+            }
+        }
+    }
+
     func remove(_ torrent: TorrentSummary, deleteFiles: Bool) {
+        selection.remove(torrent.id)
         perform("Could not remove “\(torrent.name)”") {
             .remove(id: torrent.id, deleteFiles: deleteFiles)
+        }
+    }
+
+    func remove(ids: Set<Int>, deleteFiles: Bool) {
+        for torrent in torrents where ids.contains(torrent.id) {
+            remove(torrent, deleteFiles: deleteFiles)
+        }
+    }
+
+    /// Changes which files of an added torrent are wanted.
+    func setFiles(_ torrent: TorrentSummary, files: Set<Int>) {
+        guard !files.isEmpty else {
+            report("Keep at least one file", DaemonError("A torrent needs at least one selected file."))
+            return
+        }
+        perform("Could not change files of “\(torrent.name)”") {
+            .setFiles(id: torrent.id, files: files.sorted())
         }
     }
 
@@ -223,20 +339,73 @@ final class TorrentStore {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
-    /// The video file Play would open: the largest video in the torrent, once it exists on disk.
+    /// The video file Play would open directly: the largest selected video, once it is complete on disk.
     func playableVideo(_ torrent: TorrentSummary) -> URL? {
-        guard let video = torrent.mainVideo else { return nil }
+        guard let video = torrent.mainVideo, video.isComplete else { return nil }
         let url = torrent.fileURL(video)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    /// Opens the torrent's largest video file in the default player, or reveals
-    /// the download folder when there is no video on disk yet.
+    /// Opens the torrent's main video: the finished file directly, or a local
+    /// stream of it while it is still downloading. Without a video, reveals the folder.
     func play(_ torrent: TorrentSummary) {
         if let url = playableVideo(torrent) {
             NSWorkspace.shared.open(url)
+        } else if let video = torrent.mainVideo, let index = torrent.files.firstIndex(of: video) {
+            stream(torrent, fileIndex: index)
         } else {
             revealInFinder(torrent)
+        }
+    }
+
+    /// Opens one file of the torrent: directly when complete, otherwise as a stream.
+    func open(_ torrent: TorrentSummary, fileIndex: Int) {
+        guard torrent.files.indices.contains(fileIndex) else { return }
+        let file = torrent.files[fileIndex]
+        let url = torrent.fileURL(file)
+        if file.isComplete, FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.open(url)
+        } else {
+            stream(torrent, fileIndex: fileIndex)
+        }
+    }
+
+    /// Asks the daemon for a streaming URL and hands it to the default player for
+    /// that file type. The daemon fetches pieces in playback order.
+    func stream(_ torrent: TorrentSummary, fileIndex: Int) {
+        let file = torrent.files[fileIndex]
+        Task {
+            do {
+                if torrent.isPaused {
+                    _ = try await client.send(.resume(id: torrent.id))
+                }
+                if !file.selected {
+                    let wanted = Set(torrent.files.indices.filter { torrent.files[$0].selected }).union([fileIndex])
+                    _ = try await client.send(.setFiles(id: torrent.id, files: wanted.sorted()))
+                }
+                guard let text = try await client.send(.streamUrl(id: torrent.id, file: fileIndex)).streamUrl,
+                      let url = URL(string: text)
+                else { throw DaemonError("The daemon did not return a stream URL.") }
+                lastStreamURL = url
+                openInPlayer(url, forFileNamed: file.name)
+                await refresh()
+            } catch {
+                report("Could not play “\(file.name)”", error)
+            }
+        }
+    }
+
+    private func openInPlayer(_ url: URL, forFileNamed name: String) {
+        let type = UTType(filenameExtension: (name as NSString).pathExtension) ?? .movie
+        var candidates: [URL] = []
+        if let player = NSWorkspace.shared.urlForApplication(toOpen: type) { candidates.append(player) }
+        candidates.append(URL(fileURLWithPath: "/Applications/VLC.app"))
+        candidates.append(URL(fileURLWithPath: "/Applications/IINA.app"))
+        candidates.append(URL(fileURLWithPath: "/System/Applications/QuickTime Player.app"))
+        if let player = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            NSWorkspace.shared.open([url], withApplicationAt: player, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
         }
     }
 

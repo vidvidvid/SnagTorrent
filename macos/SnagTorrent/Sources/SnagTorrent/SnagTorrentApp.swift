@@ -45,6 +45,15 @@ struct SnagTorrentApp: App {
                 Picker("Appearance", selection: $appearance) {
                     ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
                 }
+                Button(store.showInspector ? "Hide Details" : "Show Details") { store.showInspector.toggle() }
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                    .disabled(store.selection.isEmpty && !store.showInspector)
+            }
+            CommandGroup(after: .textEditing) {
+                Button("Find") {
+                    NotificationCenter.default.post(name: .snagFocusSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
             }
             CommandMenu("Daemon") {
                 Button("Start Daemon") { Task { await store.startDaemon() } }
@@ -64,6 +73,7 @@ extension Notification.Name {
     static let snagShowAddSheet = Notification.Name("io.github.vidvidvid.SnagTorrent.showAddSheet")
     static let snagOpenTorrentFile = Notification.Name("io.github.vidvidvid.SnagTorrent.openTorrentFile")
     static let snagRequestDelete = Notification.Name("io.github.vidvidvid.SnagTorrent.requestDelete")
+    static let snagFocusSearch = Notification.Name("io.github.vidvidvid.SnagTorrent.focusSearch")
 }
 
 /// Handles `.torrent` files and magnet links opened from Finder or a browser.
@@ -92,5 +102,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// With the preference on, stops the daemon before quitting so nothing keeps
+    /// seeding in the background. Done synchronously: the daemon answers at once,
+    /// and an async reply here would wait on the main thread that is quitting.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if UserDefaults.standard.bool(forKey: TorrentStore.stopDaemonOnQuitKey) {
+            _ = try? TorrentStore.shared.client.sendSynchronously(.shutdown)
+        }
+        return .terminateNow
     }
 }

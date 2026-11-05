@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(TorrentStore.self) private var store
-    @State private var selection: Set<TorrentSummary.ID> = []
+    @FocusState private var searchFocused: Bool
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
     @State private var showingAddSheet = false
     @State private var pendingDelete: TorrentSummary?
@@ -21,6 +21,19 @@ struct ContentView: View {
         }
         .toolbar { toolbarContent }
         .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search torrents")
+        .searchFocused($searchFocused)
+        .inspector(isPresented: $store.showInspector) {
+            InspectorView(torrent: store.selectedTorrent)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .snagFocusSearch)) { _ in
+            searchFocused = true
+        }
+        // The details pane follows the selection: clicking an empty part of the list
+        // (or pressing Escape) clears it, and that closes the pane.
+        .onChange(of: store.selection) { _, selection in
+            if selection.isEmpty { store.showInspector = false }
+        }
         .sheet(isPresented: $showingAddSheet) {
             AddTorrentSheet { source, paused in store.add(source, paused: paused) }
         }
@@ -94,12 +107,22 @@ struct ContentView: View {
 
     private var table: some View {
         @Bindable var store = store
-        return Table(visibleTorrents, selection: $selection, sortOrder: $store.sortOrder) {
+        return Table(visibleTorrents, selection: $store.selection, sortOrder: $store.sortOrder) {
             TableColumn("Name", value: \.name) { torrent in
-                Text(torrent.name)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(torrent.name)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(torrent.name)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(torrent.name)
+                    if let error = torrent.error {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(error)
+                    }
+                }
             }
             .width(min: 140, ideal: 170)
 
@@ -168,13 +191,28 @@ struct ContentView: View {
         }
         .tableStyle(.inset(alternatesRowBackgrounds: false))
         .contextMenu(forSelectionType: TorrentSummary.ID.self) { ids in
-            if let torrent = store.torrents.first(where: { ids.contains($0.id) }) {
+            if ids.count > 1 {
+                bulkMenu(ids)
+            } else if let torrent = store.torrents.first(where: { ids.contains($0.id) }) {
                 rowMenu(torrent)
             }
         } primaryAction: { ids in
             if let torrent = store.torrents.first(where: { ids.contains($0.id) }) {
                 store.play(torrent)
             }
+        }
+        .onDeleteCommand {
+            store.remove(ids: store.selection, deleteFiles: false)
+        }
+        .onKeyPress(.escape) {
+            guard !store.selection.isEmpty else { return .ignored }
+            store.selection = []
+            return .handled
+        }
+        .onKeyPress(.space) {
+            guard !store.selection.isEmpty else { return .ignored }
+            store.togglePause(ids: store.selection)
+            return .handled
         }
         .overlay {
             if isDropTargeted {
@@ -187,10 +225,22 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private func bulkMenu(_ ids: Set<Int>) -> some View {
+        let targets = store.torrents.filter { ids.contains($0.id) }
+        let anyRunning = targets.contains { !$0.isPaused }
+        Button(anyRunning ? "Pause \(targets.count) Torrents" : "Resume \(targets.count) Torrents") {
+            store.togglePause(ids: ids)
+        }
+        Divider()
+        Button("Remove \(targets.count) Torrents (Keep Files)") { store.remove(ids: ids, deleteFiles: false) }
+    }
+
+    @ViewBuilder
     private func rowMenu(_ torrent: TorrentSummary) -> some View {
         Button("Play") { store.play(torrent) }
         Button(torrent.isPaused ? "Resume" : "Pause") { store.togglePause(torrent) }
         Button("Reveal in Finder") { store.revealInFinder(torrent) }
+        Button("Show Details") { store.selection = [torrent.id]; store.showInspector = true }
         Divider()
         Button("Remove (Keep Files)") { store.remove(torrent, deleteFiles: false) }
         Button("Delete Torrent and Files…", role: .destructive) { pendingDelete = torrent }
@@ -213,6 +263,15 @@ struct ContentView: View {
                 Label("Add Torrent", systemImage: "plus")
             }
             .help("Add a magnet link, info hash, torrent URL, or .torrent file (⌘N)")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                store.showInspector.toggle()
+            } label: {
+                Label("Details", systemImage: "sidebar.trailing")
+            }
+            .disabled(store.selection.isEmpty && !store.showInspector)
+            .help("Show or hide details for the selected torrent (⌥⌘I)")
         }
         ToolbarItem(placement: .primaryAction) {
             Menu {

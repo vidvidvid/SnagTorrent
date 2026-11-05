@@ -3,6 +3,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(TorrentStore.self) private var store
+    @AppStorage(TorrentStore.notifyWhenDoneKey) private var notifyWhenDone = true
+    @AppStorage(TorrentStore.stopDaemonOnQuitKey) private var stopDaemonOnQuit = false
 
     var body: some View {
         Form {
@@ -26,10 +28,25 @@ struct SettingsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            Section("When a download finishes") {
+                Toggle("Pause instead of seeding", isOn: Binding(
+                    get: { store.pauseWhenDone },
+                    set: { on in Task { await store.setPauseWhenDone(on) } }
+                ))
+                .disabled(!store.daemonRunning)
+                Toggle("Show a notification", isOn: $notifyWhenDone)
+            }
+            Section("Daemon") {
+                Toggle("Stop the daemon when SnagTorrent quits", isOn: $stopDaemonOnQuit)
+                Text("Otherwise downloads keep running in the background after the window closes.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+        .task { await store.refreshStatus() }
     }
 
     private func chooseFolder() {

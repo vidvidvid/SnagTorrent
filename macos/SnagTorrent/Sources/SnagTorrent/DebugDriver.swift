@@ -63,6 +63,22 @@ enum DebugDriver {
         case "confirmdelete": if let torrent { NotificationCenter.default.post(name: .snagRequestDelete, object: torrent.id) }
         case "play": if let torrent { store.play(torrent) }
         case "reveal": if let torrent { store.revealInFinder(torrent) }
+        case "select": store.selection = Set(argument.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+        case "inspector": store.showInspector = argument != "off"
+        case "space": store.togglePause(ids: store.selection)
+        case "deletekey": store.remove(ids: store.selection, deleteFiles: false)
+        case "setfiles":
+            let words = argument.split(separator: " ").map(String.init)
+            if words.count == 2, let id = Int(words[0]), let torrent = store.torrents.first(where: { $0.id == id }) {
+                store.setFiles(torrent, files: Set(words[1].split(separator: ",").compactMap { Int($0) }))
+            }
+        case "openfile":
+            let words = argument.split(separator: " ").compactMap { Int($0) }
+            if words.count == 2, let torrent = store.torrents.first(where: { $0.id == words[0] }) {
+                store.open(torrent, fileIndex: words[1])
+            }
+        case "quit": NSApp.terminate(nil)
+        case "pausedone": Task { await store.setPauseWhenDone(argument == "on") }
         case "setdir": Task { await store.changeDownloadDirectory(URL(fileURLWithPath: argument, isDirectory: true)) }
         case "stop": Task { await store.stopDaemon() }
         case "start": Task { await store.startDaemon() }
@@ -148,6 +164,7 @@ enum DebugDriver {
             "windows=\(NSApp.windows.filter(\.isVisible).map { "\($0.className):\($0.title)" }.joined(separator: ","))",
             "flow=\(flowDescription(store.addFlow))",
             "downloads=\(store.downloadDirectory.path)",
+            "selection=\(store.selection.sorted().map(String.init).joined(separator: ",")) inspector=\(store.showInspector) pauseWhenDone=\(store.pauseWhenDone) streamPort=\(store.streamPort) lastStream=\(store.lastStreamURL?.absoluteString ?? "-") badge=\(NSApp.dockTile.badgeLabel ?? "-")",
         ]
         for torrent in store.visibleTorrents {
             let video = store.playableVideo(torrent)?.path ?? "-"

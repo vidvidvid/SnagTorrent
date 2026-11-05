@@ -37,6 +37,18 @@ pub enum Request {
         id: usize,
         files: Vec<usize>,
     },
+    /// Daemon version, folders, and settings.
+    Status,
+    /// Change settings; unset fields keep their value. Replies with the new status.
+    Configure {
+        #[serde(default)]
+        pause_when_done: Option<bool>,
+    },
+    /// A local URL that streams one file while it downloads (for media players).
+    StreamUrl {
+        id: usize,
+        file: usize,
+    },
     Shutdown,
 }
 
@@ -48,6 +60,22 @@ pub struct Response {
     /// Set only for `Inspect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<TorrentPreview>,
+    /// Set for `Status` and `Configure`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<DaemonStatus>,
+    /// Set for `StreamUrl`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    pub version: String,
+    pub download_dir: String,
+    /// Pause a torrent once it finishes instead of seeding it.
+    pub pause_when_done: bool,
+    /// Local port of the streaming server (127.0.0.1 only).
+    pub stream_port: u16,
 }
 
 /// Metadata of a torrent that has not been added yet.
@@ -66,6 +94,8 @@ impl Response {
             message: Some(message.into()),
             torrents: Vec::new(),
             preview: None,
+            status: None,
+            stream_url: None,
         }
     }
 
@@ -75,6 +105,8 @@ impl Response {
             message: Some(message.into()),
             torrents: vec![torrent],
             preview: None,
+            status: None,
+            stream_url: None,
         }
     }
 
@@ -84,15 +116,29 @@ impl Response {
             message: None,
             torrents,
             preview: None,
+            status: None,
+            stream_url: None,
         }
     }
 
     pub fn preview(preview: TorrentPreview) -> Self {
         Self {
-            error: None,
-            message: None,
-            torrents: Vec::new(),
             preview: Some(preview),
+            ..Self::list(Vec::new())
+        }
+    }
+
+    pub fn status(status: DaemonStatus) -> Self {
+        Self {
+            status: Some(status),
+            ..Self::list(Vec::new())
+        }
+    }
+
+    pub fn stream_url(url: String) -> Self {
+        Self {
+            stream_url: Some(url),
+            ..Self::list(Vec::new())
         }
     }
 
@@ -102,6 +148,8 @@ impl Response {
             message: None,
             torrents: Vec::new(),
             preview: None,
+            status: None,
+            stream_url: None,
         }
     }
 }
@@ -147,4 +195,68 @@ pub struct FileSummary {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_add_request_without_only_files_still_parses() {
+        let request: Request = serde_json::from_str(
+            r#"{"Add":{"source":"magnet:?x","paused":false,"initial_peers":[]}}"#,
+        )
+        .unwrap();
+        match request {
+            Request::Add { only_files, .. } => assert!(only_files.is_none()),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn configure_fields_are_optional() {
+        let request: Request = serde_json::from_str(r#"{"Configure":{}}"#).unwrap();
+        assert!(matches!(
+            request,
+            Request::Configure {
+                pause_when_done: None
+            }
+        ));
+    }
+
+    #[test]
+    fn unit_requests_are_plain_strings() {
+        assert_eq!(serde_json::to_string(&Request::List).unwrap(), r#""List""#);
+        assert_eq!(
+            serde_json::to_string(&Request::Status).unwrap(),
+            r#""Status""#
+        );
+    }
+
+    #[test]
+    fn list_response_omits_unset_extras() {
+        let json = serde_json::to_value(Response::list(Vec::new())).unwrap();
+        assert!(json.get("preview").is_none());
+        assert!(json.get("status").is_none());
+        assert!(json.get("stream_url").is_none());
+    }
+
+    #[test]
+    fn summary_from_older_daemon_fills_defaults() {
+        let summary: TorrentSummary = serde_json::from_str(
+            r#"{"id":1,"name":"n","info_hash":"h","state":"paused","progress_bytes":0,
+                "total_bytes":10,"download_speed":0,"upload_speed":0,"output_folder":"/","error":null}"#,
+        )
+        .unwrap();
+        assert_eq!(summary.seeders, 0);
+        assert!(summary.eta_seconds.is_none());
+        assert!(summary.files.is_empty());
+    }
+
+    #[test]
+    fn file_selected_defaults_to_true() {
+        let file: FileSummary =
+            serde_json::from_str(r#"{"path":"a","length":1,"progress_bytes":0}"#).unwrap();
+        assert!(file.selected);
+    }
 }

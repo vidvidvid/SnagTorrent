@@ -19,6 +19,13 @@ pub struct AppPaths {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub download_dir: PathBuf,
+    /// Pause a torrent once it finishes instead of seeding it.
+    #[serde(default = "default_pause_when_done")]
+    pub pause_when_done: bool,
+}
+
+fn default_pause_when_done() -> bool {
+    true
 }
 
 impl AppPaths {
@@ -54,6 +61,7 @@ impl AppPaths {
                 let home = home_dir()?;
                 Ok(Config {
                     download_dir: home.join("Downloads").join("SnagTorrent"),
+                    pause_when_done: default_pause_when_done(),
                 })
             }
             Err(error) => Err(error).context("could not read config.json"),
@@ -151,4 +159,24 @@ pub fn create_private_dir(path: &Path) -> Result<()> {
     }
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_from_before_pause_when_done_defaults_to_on() {
+        let config: Config = serde_json::from_str(r#"{"download_dir":"/tmp/dl"}"#).unwrap();
+        assert!(config.pause_when_done);
+    }
+
+    #[test]
+    fn relative_download_dir_is_rejected() {
+        let config = Config {
+            download_dir: PathBuf::from("relative/dir"),
+            pause_when_done: true,
+        };
+        assert!(config.ensure_download_dir().is_err());
+    }
 }

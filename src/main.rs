@@ -2,6 +2,7 @@ mod client;
 mod daemon;
 mod paths;
 mod protocol;
+mod stream;
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -57,11 +58,24 @@ enum Command {
     #[command(about = "Choose which files of a torrent to download (indices from `snag files`)")]
     Select {
         id: usize,
-        #[arg(required = true, help = "File indices to download; all other files are skipped")]
+        #[arg(
+            required = true,
+            help = "File indices to download; all other files are skipped"
+        )]
         files: Vec<usize>,
     },
     #[command(about = "List a torrent's files with their indices")]
     Files { id: usize },
+    #[command(about = "Show or change settings")]
+    Config {
+        #[arg(
+            long,
+            help = "Pause torrents when they finish instead of seeding (true/false)"
+        )]
+        pause_when_done: Option<bool>,
+    },
+    #[command(about = "Print a local URL that streams a file while it downloads")]
+    Stream { id: usize, file: usize },
     #[command(about = "Stop the background daemon")]
     Stop,
     #[command(hide = true)]
@@ -98,10 +112,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             }
             if let Some(download_dir) = download_dir {
                 let download_dir = absolute_path(download_dir)?;
-                let config = paths::Config { download_dir };
-                let config = paths::Config {
-                    download_dir: config.ensure_download_dir()?,
-                };
+                let mut config = paths.load_config()?;
+                config.download_dir = download_dir;
+                config.download_dir = config.ensure_download_dir()?;
                 paths.save_config(&config)?;
             }
             client::ensure_running(&paths).await?;
@@ -179,6 +192,25 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     display_name(&file.path)
                 );
             }
+            Ok(())
+        }
+        Command::Config { pause_when_done } => {
+            let request = match pause_when_done {
+                Some(_) => Request::Configure { pause_when_done },
+                None => Request::Status,
+            };
+            let response = client::call(&paths, request).await?;
+            if let Some(status) = response.status {
+                println!("Version:          {}", status.version);
+                println!("Downloads:        {}", status.download_dir);
+                println!("Pause when done:  {}", status.pause_when_done);
+                println!("Stream port:      {}", status.stream_port);
+            }
+            Ok(())
+        }
+        Command::Stream { id, file } => {
+            let response = client::call(&paths, Request::StreamUrl { id, file }).await?;
+            print_message(&response.stream_url);
             Ok(())
         }
         Command::Stop => {

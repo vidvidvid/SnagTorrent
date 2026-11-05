@@ -11,13 +11,22 @@ enum DaemonRequest: Sendable {
     case resume(id: Int)
     case remove(id: Int, deleteFiles: Bool)
     case setFiles(id: Int, files: [Int])
+    case status
+    case configure(pauseWhenDone: Bool?)
+    case streamUrl(id: Int, file: Int)
     case shutdown
 
     var json: Any {
         switch self {
         case .ping: return "Ping"
         case .list: return "List"
+        case .status: return "Status"
         case .shutdown: return "Shutdown"
+        case let .configure(pauseWhenDone):
+            var fields: [String: Any] = [:]
+            if let pauseWhenDone { fields["pause_when_done"] = pauseWhenDone }
+            return ["Configure": fields]
+        case let .streamUrl(id, file): return ["StreamUrl": ["id": id, "file": file]]
         case let .add(source, paused, onlyFiles):
             var add: [String: Any] = ["source": source, "paused": paused, "initial_peers": [String]()]
             if let onlyFiles { add["only_files"] = onlyFiles }
@@ -91,6 +100,12 @@ final class DaemonClient: Sendable {
                 continuation.resume(with: Result { try self.exchange(request) })
             }
         }
+    }
+
+    /// Blocking variant for the quit path, where waiting on an async reply would
+    /// deadlock the main thread. Fails fast when the daemon is not running.
+    func sendSynchronously(_ request: DaemonRequest) throws -> DaemonResponse {
+        try exchange(request)
     }
 
     func isRunning() async -> Bool {
