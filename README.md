@@ -64,6 +64,18 @@ snag start --download-dir /path/to/downloads
 
 Run `snag --help` or `snag <command> --help` for all options.
 
+## GUI
+
+A native SwiftUI app lives in `macos/SnagTorrent`. It shows every torrent the daemon knows in a sortable, filterable table with per-row actions (play the largest video file, pause/resume, reveal in Finder, remove, delete with files), accepts magnet links, info hashes, torrent URLs, and dropped or opened `.torrent` files, and can start or stop the daemon.
+
+Build and install it (needs Xcode and a Rust toolchain; the app bundles the `snag` binary so the daemon starts on demand):
+
+```sh
+macos/SnagTorrent/build.sh --install
+```
+
+This builds `snag` in release mode, builds the Swift package, assembles `macos/SnagTorrent/build/SnagTorrent.app`, and copies it to `/Applications`. Omit `--install` to only build. The app talks to the same daemon and state directory as the CLI, so `snag list` and the app always agree.
+
 ## Security and privacy
 
 Control uses a local Unix socket in a user-only directory; there is no HTTP control API. State and download directories created by SnagTorrent use owner-only permissions. Torrent names are sanitized before terminal output, and file deletion requires an explicit flag.

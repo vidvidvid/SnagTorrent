@@ -80,4 +80,26 @@ pub struct TorrentSummary {
     pub upload_speed: u64,
     pub output_folder: String,
     pub error: Option<String>,
+    #[serde(default)]
+    pub uploaded_bytes: u64,
+    /// Connected peers that already have the whole torrent.
+    #[serde(default)]
+    pub seeders: u64,
+    /// Connected peers that are still downloading.
+    #[serde(default)]
+    pub leechers: u64,
+    /// Seconds until the download completes, when it is downloading at a measurable rate.
+    #[serde(default)]
+    pub eta_seconds: Option<u64>,
+    /// Files in the torrent, in torrent order; empty until metadata is resolved.
+    #[serde(default)]
+    pub files: Vec<FileSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileSummary {
+    /// Path relative to `output_folder`.
+    pub path: String,
+    pub length: u64,
+    pub progress_bytes: u64,
 }

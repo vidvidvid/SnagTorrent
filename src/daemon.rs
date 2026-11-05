@@ -18,7 +18,7 @@ use tokio::{
 
 use crate::{
     paths::{AppPaths, create_private_dir},
-    protocol::{MAX_REQUEST_BYTES, Request, Response, TorrentSummary},
+    protocol::{FileSummary, MAX_REQUEST_BYTES, Request, Response, TorrentSummary},
 };
 
 pub async fn run(paths: AppPaths) -> Result<()> {
@@ -216,6 +216,35 @@ fn summarize(handle: &Arc<ManagedTorrent>) -> TorrentSummary {
         .as_ref()
         .map(|live| (live.download_speed.as_bytes(), live.upload_speed.as_bytes()))
         .unwrap_or_default();
+    let (seeders, leechers) = stats
+        .live
+        .as_ref()
+        .map(|live| {
+            let peers = &live.snapshot.peer_stats;
+            let seeders = u64::from(peers.live_seeders);
+            (seeders, u64::from(peers.live).saturating_sub(seeders))
+        })
+        .unwrap_or_default();
+    let remaining = stats.total_bytes.saturating_sub(stats.progress_bytes);
+    let eta_seconds = if state == "downloading" && download_speed > 0 && remaining > 0 {
+        Some(remaining.div_ceil(download_speed))
+    } else {
+        None
+    };
+    let files = handle
+        .with_metadata(|metadata| {
+            metadata
+                .file_infos
+                .iter()
+                .enumerate()
+                .map(|(index, file)| FileSummary {
+                    path: file.relative_filename.to_string_lossy().into_owned(),
+                    length: file.len,
+                    progress_bytes: stats.file_progress.get(index).copied().unwrap_or(0),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     TorrentSummary {
         id: handle.id(),
         name: handle
@@ -229,6 +258,11 @@ fn summarize(handle: &Arc<ManagedTorrent>) -> TorrentSummary {
         upload_speed,
         output_folder: handle.output_folder().to_string_lossy().into_owned(),
         error: stats.error,
+        uploaded_bytes: stats.uploaded_bytes,
+        seeders,
+        leechers,
+        eta_seconds,
+        files,
     }
 }
 
